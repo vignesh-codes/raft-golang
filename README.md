@@ -1,6 +1,7 @@
 # raft-golang
 
 This program just registers the new node to the leader
+update-1: added leader election and heartbeat mechanisms
 
 How to Run
 Start the first node (Leader)
