@@ -58,7 +58,7 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 // sendHeartbeats (or log replication) is used by the leader to send AppendEntries RPCs.
 func sendHeartbeats() {
 	for {
-		fmt.Println("sending heartbeats with term ", node.CurrentTerm)
+		fmt.Println("Sending heartbeats with term", node.CurrentTerm)
 
 		node.mu.Lock()
 		if node.State != Leader {
@@ -66,59 +66,64 @@ func sendHeartbeats() {
 			return
 		}
 
-		// Get the previous log index and term.
-		var prevLogIndex, prevLogTerm int
-		if len(node.Log) > 0 {
-			prevLogIndex = len(node.Log) - 1
-			prevLogTerm = node.Log[prevLogIndex].Term
-		}
-
-		// Lock myNewEntries to safely extract entries.
-		// myNewEntries.Mutex.Lock()
-		entries := myNewEntries.GetHeadAndDeleteHead() // Safely retrieve entries
-		// myNewEntries.Mutex.Unlock()
-		fmt.Println("unlocked myNewEntries, extracted", len(entries), "entries")
-
-		req := AppendEntriesRequest{
-			Term:         node.CurrentTerm,
-			LeaderID:     node.ID,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      entries, // Includes new log entries
-			LeaderCommit: node.CommitIndex,
-		}
-
-		fmt.Println("Leader sending AppendEntries to peers:", node.Peers)
-
-		// Copy peers list to avoid concurrent map access.
 		peersCopy := make([]PeerNode, 0, len(node.Peers))
 		for _, p := range node.Peers {
 			peersCopy = append(peersCopy, p)
 		}
 		node.mu.Unlock()
 
-		// Send heartbeats in parallel
 		for _, peer := range peersCopy {
 			if peer.ID == node.ID {
 				continue
 			}
 
-			go func(peer PeerNode) {
-				resp, err := sendAppendEntries(peer, req)
-				if err != nil || !resp.Success {
-					log.Printf("Failed to send AppendEntries to %s: %v", peer.Address, err)
-					if err != nil {
-						node.mu.Lock()
-						delete(node.Peers, peer.ID)
-						fmt.Println("Updated peers list:", node.Peers)
-						node.mu.Unlock()
-						syncPeers()
-					}
+			// go func(peer PeerNode) {
+			node.mu.Lock()
+			nextIdx, exists := node.NextIndex[peer.ID]
+			if !exists {
+				node.NextIndex[peer.ID] = len(node.Log)
+				nextIdx = len(node.Log)
+			}
+			node.mu.Unlock()
+
+			if nextIdx > len(node.Log) {
+				return
+			}
+
+			var prevLogIndex, prevLogTerm int
+			if nextIdx > 0 {
+				prevLogIndex = nextIdx - 1
+				prevLogTerm = node.Log[prevLogIndex].Term
+			}
+
+			entries := node.Log[nextIdx:]
+
+			req := AppendEntriesRequest{
+				Term:         node.CurrentTerm,
+				LeaderID:     node.ID,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      entries,
+				LeaderCommit: node.CommitIndex,
+			}
+
+			resp, err := sendAppendEntries(peer, req)
+			if err != nil || !resp.Success {
+				log.Printf("Failed to send AppendEntries to %s: %v", peer.Address, err)
+				node.mu.Lock()
+				if node.NextIndex[peer.ID] > 0 {
+					node.NextIndex[peer.ID]-- // Back off
 				}
-			}(peer)
+				node.mu.Unlock()
+			} else {
+				node.mu.Lock()
+				node.NextIndex[peer.ID] = nextIdx + len(entries)
+				node.mu.Unlock()
+			}
+			// }(peer)
 		}
 
-		time.Sleep(5 * time.Second) // Maintain heartbeat interval
+		time.Sleep(5 * time.Second)
 	}
 }
 

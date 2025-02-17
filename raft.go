@@ -47,6 +47,7 @@ type RaftNode struct {
 	State       NodeState           `json:"state"`
 	Log         []LogEntry          `json:"log"`
 	CommitIndex int                 `json:"commit_index"`
+	NextIndex   map[string]int      `json:"next_index"`
 	mu          sync.Mutex
 }
 
@@ -139,11 +140,12 @@ func main() {
 	electionTimeout = time.Duration(rand.Intn(5)+10) * time.Second
 
 	node = RaftNode{
-		ID:      "node-" + port,
-		Address: "http://localhost:" + port,
-		Peers:   make(map[string]PeerNode),
-		State:   Follower,
-		Log:     make([]LogEntry, 0),
+		ID:        "node-" + port,
+		Address:   "http://localhost:" + port,
+		Peers:     make(map[string]PeerNode),
+		State:     Follower,
+		Log:       make([]LogEntry, 0),
+		NextIndex: make(map[string]int),
 	}
 	fmt.Println("Known peer (if any):", knownPeer)
 

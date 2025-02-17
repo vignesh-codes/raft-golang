@@ -20,8 +20,9 @@ type AppendEntriesRequest struct {
 
 // AppendEntriesResponse is returned by followers after processing AppendEntries.
 type AppendEntriesResponse struct {
-	Term    int  `json:"term"`
-	Success bool `json:"success"`
+	Term         int  `json:"term"`
+	Success      bool `json:"success"`
+	PrevLogIndex int  `json:"prev_log_index"`
 }
 
 // handleAppendEntries processes the AppendEntries RPC from the leader.
@@ -59,8 +60,8 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Checking log consistency at PrevLogIndex=%d\n", req.PrevLogIndex)
 
 		if len(node.Log) < req.PrevLogIndex {
-			fmt.Println("Rejecting request: Log is too short, missing previous entry. ", len(node.Log))
-			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false}
+			fmt.Println("Rejecting request: Log is too short, missing previous entry. ", node.CommitIndex, req.PrevLogIndex)
+			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false, PrevLogIndex: node.CommitIndex}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
 			return
@@ -68,7 +69,7 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 
 		if node.Log[req.PrevLogIndex-1].Term != req.PrevLogTerm {
 			fmt.Println("Rejecting request: Log term mismatch at PrevLogIndex.")
-			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false}
+			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false, PrevLogIndex: node.CommitIndex}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
 			return
@@ -106,7 +107,7 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Println("AppendEntries request processed successfully")
-
+	fmt.Println("current node log is ----- \n ", node.Log)
 	resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: true}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -131,6 +132,8 @@ func sendAppendEntries(peer PeerNode, req AppendEntriesRequest) (*AppendEntriesR
 			time.Sleep(2 * time.Second)
 			continue
 		}
+		fmt.Println("response from append entries", response)
+		fmt.Println("leader logs are ", node.Log)
 		return &response, nil
 	}
 	return response, nil
