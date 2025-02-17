@@ -2,6 +2,12 @@
 
 This program just registers the new node to the leader \
 update-1: added leader election and heartbeat mechanisms
+update-2: added log replication for new nodes, log replication with followers
+
+Todo:
+- commit strategy for new logs
+- lock mechanism on all nodes based on data hash
+- come up with worst case scenarios - leader failing, node failing during requests etc
 
 How to Run
 Start the first node (Leader)
