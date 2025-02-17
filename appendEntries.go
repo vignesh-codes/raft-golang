@@ -23,6 +23,8 @@ type AppendEntriesResponse struct {
 	Term         int  `json:"term"`
 	Success      bool `json:"success"`
 	PrevLogIndex int  `json:"prev_log_index"`
+	LastLogIndex int  `json:"lastLogIndex"` // NEW: Last log index of follower
+	CommitIndex  int  `json:"commitIndex"`  // NEW: Commit index of follower
 }
 
 // handleAppendEntries processes the AppendEntries RPC from the leader.
@@ -39,77 +41,62 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	fmt.Printf("AppendEntries request details: Term=%d, LeaderID=%d, PrevLogIndex=%d, PrevLogTerm=%d, Entries=%v, LeaderCommit=%d\n",
+	fmt.Printf("AppendEntries request: Term=%d, LeaderID=%s, PrevLogIndex=%d, PrevLogTerm=%d, Entries=%v, LeaderCommit=%d\n",
 		req.Term, req.LeaderID, req.PrevLogIndex, req.PrevLogTerm, req.Entries, req.LeaderCommit)
 
-	// If the leader's term is less than our term, reject the request.
+	// Reject outdated term
 	if req.Term < node.CurrentTerm {
-		fmt.Println("Rejecting request: Leader's term is outdated.")
-		resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false}
-		w.Header().Set("Content-Type", "application/json")
+		fmt.Println("Rejecting: Leader's term is outdated.")
+		resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false, LastLogIndex: len(node.Log) - 1, CommitIndex: node.CommitIndex}
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
-	// Reset the election timer.
-	fmt.Println("Resetting election timer")
+	// Reset election timeout
 	electionResetChan <- true
 
-	// If prevLogIndex > 0, ensure our log has an entry at that index with a matching term.
-	if req.PrevLogIndex > 0 {
-		fmt.Printf("Checking log consistency at PrevLogIndex=%d\n", req.PrevLogIndex)
-
-		if len(node.Log) < req.PrevLogIndex {
-			fmt.Println("Rejecting request: Log is too short, missing previous entry. ", node.CommitIndex, req.PrevLogIndex)
-			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false, PrevLogIndex: node.CommitIndex}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-
-		if node.Log[req.PrevLogIndex-1].Term != req.PrevLogTerm {
-			fmt.Println("Rejecting request: Log term mismatch at PrevLogIndex.")
-			resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: false, PrevLogIndex: node.CommitIndex}
-			w.Header().Set("Content-Type", "application/json")
+	// If prevLogIndex > 0, ensure consistency
+	if req.PrevLogIndex >= 1 {
+		if len(node.Log) <= req.PrevLogIndex || node.Log[req.PrevLogIndex].Term != req.PrevLogTerm {
+			fmt.Println("Rejecting: Log mismatch at PrevLogIndex.")
+			resp := AppendEntriesResponse{
+				Term:         node.CurrentTerm,
+				Success:      false,
+				LastLogIndex: len(node.Log) - 1, // Send correct log index
+				CommitIndex:  node.CommitIndex,  // Send commit index
+			}
 			json.NewEncoder(w).Encode(resp)
 			return
 		}
 	}
 
-	// Append any new entries that are not already in the log.
-	fmt.Println("Appending new entries if necessary")
-	newIndex := req.PrevLogIndex
+	// Append new entries
+	newIndex := req.PrevLogIndex + 1
 	for i, entry := range req.Entries {
 		if len(node.Log) > newIndex {
 			if node.Log[newIndex].Term != entry.Term {
-				// Conflict detected: delete the conflicting entry and all that follow.
-				fmt.Printf("Conflict detected at index %d! Truncating log and appending new entries.\n", newIndex)
-				node.Log = node.Log[:newIndex]
+				node.Log = node.Log[:newIndex] // Truncate conflicting entries
 				node.Log = append(node.Log, req.Entries[i:]...)
 				break
 			}
 		} else {
-			fmt.Printf("Appending new entry at index %d: %+v\n", newIndex, entry)
 			node.Log = append(node.Log, entry)
 		}
 		newIndex++
 	}
 
-	// If LeaderCommit > commitIndex, update commitIndex.
+	// Update commit index
 	if req.LeaderCommit > node.CommitIndex {
-		prevCommitIndex := node.CommitIndex
-		if req.LeaderCommit < len(node.Log) {
-			node.CommitIndex = req.LeaderCommit
-		} else {
-			node.CommitIndex = len(node.Log)
-		}
-		fmt.Printf("Updated commit index from %d to %d\n", prevCommitIndex, node.CommitIndex)
+		node.CommitIndex = min(req.LeaderCommit, len(node.Log)-1)
 	}
 
-	fmt.Println("AppendEntries request processed successfully")
-	fmt.Println("current node log is ----- \n ", node.Log)
-	resp := AppendEntriesResponse{Term: node.CurrentTerm, Success: true}
-	w.Header().Set("Content-Type", "application/json")
+	fmt.Printf("Updated log: %+v\n", node.Log)
+	resp := AppendEntriesResponse{
+		Term:         node.CurrentTerm,
+		Success:      true,
+		LastLogIndex: len(node.Log) - 1, // Send last index to leader
+		CommitIndex:  node.CommitIndex,  // Send commit index
+	}
 	json.NewEncoder(w).Encode(resp)
 }
 

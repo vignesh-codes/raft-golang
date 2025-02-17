@@ -77,50 +77,44 @@ func sendHeartbeats() {
 				continue
 			}
 
-			// go func(peer PeerNode) {
-			node.mu.Lock()
-			nextIdx, exists := node.NextIndex[peer.ID]
-			if !exists {
-				node.NextIndex[peer.ID] = len(node.Log)
-				nextIdx = len(node.Log)
-			}
-			node.mu.Unlock()
-
-			if nextIdx > len(node.Log) {
-				return
-			}
-
-			var prevLogIndex, prevLogTerm int
-			if nextIdx > 0 {
-				prevLogIndex = nextIdx - 1
-				prevLogTerm = node.Log[prevLogIndex].Term
-			}
-
-			entries := node.Log[nextIdx:]
-
-			req := AppendEntriesRequest{
-				Term:         node.CurrentTerm,
-				LeaderID:     node.ID,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      entries,
-				LeaderCommit: node.CommitIndex,
-			}
-
-			resp, err := sendAppendEntries(peer, req)
-			if err != nil || !resp.Success {
-				log.Printf("Failed to send AppendEntries to %s: %v", peer.Address, err)
+			go func(peer PeerNode) {
 				node.mu.Lock()
-				if node.NextIndex[peer.ID] > 0 {
-					node.NextIndex[peer.ID]-- // Back off
+				nextIdx := node.NextIndex[peer.ID]
+				node.mu.Unlock()
+
+				if nextIdx > len(node.Log) {
+					return
 				}
-				node.mu.Unlock()
-			} else {
-				node.mu.Lock()
-				node.NextIndex[peer.ID] = nextIdx + len(entries)
-				node.mu.Unlock()
-			}
-			// }(peer)
+
+				var prevLogIndex, prevLogTerm int
+				if nextIdx > 0 {
+					prevLogIndex = nextIdx - 1
+					prevLogTerm = node.Log[prevLogIndex].Term
+				}
+
+				entries := node.Log[nextIdx:]
+
+				req := AppendEntriesRequest{
+					Term:         node.CurrentTerm,
+					LeaderID:     node.ID,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      entries,
+					LeaderCommit: node.CommitIndex,
+				}
+
+				resp, err := sendAppendEntries(peer, req)
+				if err != nil || !resp.Success {
+					fmt.Printf("Failed AppendEntries to %s, backing off\n", peer.ID)
+					node.mu.Lock()
+					node.NextIndex[peer.ID] = max(0, resp.LastLogIndex+1) // Use last log index from follower
+					node.mu.Unlock()
+				} else {
+					node.mu.Lock()
+					node.NextIndex[peer.ID] = resp.LastLogIndex + 1
+					node.mu.Unlock()
+				}
+			}(peer)
 		}
 
 		time.Sleep(5 * time.Second)
