@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -19,18 +18,11 @@ type AppendEntriesRequest struct {
 	LeaderCommit int        `json:"leader_commit"`
 }
 
-type NewEntries struct {
-	Entries []LogEntry `json:"entries"`
-	Mutex   sync.Mutex
-}
-
 // AppendEntriesResponse is returned by followers after processing AppendEntries.
 type AppendEntriesResponse struct {
 	Term    int  `json:"term"`
 	Success bool `json:"success"`
 }
-
-var myNewEntries = NewEntries{Entries: make([]LogEntry, 0)}
 
 // handleAppendEntries processes the AppendEntries RPC from the leader.
 func handleAppendEntries(w http.ResponseWriter, r *http.Request) {

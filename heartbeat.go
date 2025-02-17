@@ -58,6 +58,8 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 // sendHeartbeats (or log replication) is used by the leader to send AppendEntries RPCs.
 func sendHeartbeats() {
 	for {
+		fmt.Println("sending heartbeats with term ", node.CurrentTerm)
+
 		node.mu.Lock()
 		if node.State != Leader {
 			node.mu.Unlock()
@@ -71,13 +73,11 @@ func sendHeartbeats() {
 			prevLogTerm = node.Log[prevLogIndex].Term
 		}
 
-		// Send new log entries instead of an empty heartbeat.
-		// lock myNewEntries to avoid concurrent access
-		myNewEntries.Mutex.Lock()
-		entries := make([]LogEntry, len(myNewEntries.Entries))
-		copy(entries, myNewEntries.Entries)
-		myNewEntries.Entries = myNewEntries.Entries[:0] // Clear the slice after copying
-		myNewEntries.Mutex.Unlock()
+		// Lock myNewEntries to safely extract entries.
+		// myNewEntries.Mutex.Lock()
+		entries := myNewEntries.GetHeadAndDeleteHead() // Safely retrieve entries
+		// myNewEntries.Mutex.Unlock()
+		fmt.Println("unlocked myNewEntries, extracted", len(entries), "entries")
 
 		req := AppendEntriesRequest{
 			Term:         node.CurrentTerm,
@@ -129,8 +129,11 @@ func startLeaderCheck() {
 		case <-electionResetChan:
 			// Election timer reset.
 		case <-time.After(electionTimeout):
-			log.Println("Leader timeout! Starting election...")
-			startElection()
+			if node.State != Leader {
+				log.Println("Leader timeout! Starting election...")
+				startElection()
+			}
+
 		}
 	}
 }

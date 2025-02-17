@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -107,6 +108,13 @@ func requestVote(peer PeerNode, votesReceived *int) {
 		if err != nil {
 			log.Printf("Failed to request vote from %s (attempt %d): %v", peer.Address, i+1, err)
 			time.Sleep(time.Duration(rand.Intn(100)+100) * time.Millisecond)
+			if i <= maxRetries {
+				// remove this peer from peers
+				node.mu.Lock()
+				delete(node.Peers, peer.ID)
+				fmt.Println("Updated peers list:", node.Peers)
+				node.mu.Unlock()
+			}
 			continue
 		}
 		var voteResp VoteResponse
