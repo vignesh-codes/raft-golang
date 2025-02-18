@@ -2,7 +2,8 @@
 
 This program just registers the new node to the leader \
 update-1: added leader election and heartbeat mechanisms \
-update-2: added log replication for new nodes, log replication with followers
+update-2: added log replication for new nodes, log replication with followers \
+update-3: i need to add sync to followers after new leader is elected
 
 Todo:
 - commit strategy for new logs
