@@ -13,8 +13,9 @@ import (
 
 // VoteRequest and VoteResponse for leader elections.
 type VoteRequest struct {
-	Term        int    `json:"term"`
-	CandidateID string `json:"candidate_id"`
+	Term         int    `json:"term"`
+	CandidateID  string `json:"candidate_id"`
+	LastLogIndex int    `json:"last_log_index"`
 }
 
 type VoteResponse struct {
@@ -70,22 +71,33 @@ func startElection() {
 	}
 }
 
-// handleVoteRequest processes vote requests during leader election.
 func handleVoteRequest(w http.ResponseWriter, r *http.Request) {
 	var req VoteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
 	voteGranted := false
-	if req.Term > node.CurrentTerm {
+	if req.Term < node.CurrentTerm {
+		// Reject the vote if the candidate's term is outdated.
+		log.Printf("Rejecting vote request from candidate %s: outdated term %d", req.CandidateID, req.Term)
+	} else if req.Term > node.CurrentTerm {
+		// Update term and step down to follower if the candidate's term is newer.
 		node.CurrentTerm = req.Term
+		node.VotedFor = ""
+		node.State = Follower
+	}
+
+	// Grant vote only if the candidate's log is up-to-date
+	if req.Term == node.CurrentTerm && (req.LastLogIndex >= len(node.Log) || node.Log[req.LastLogIndex].Term == req.Term) {
 		node.VotedFor = req.CandidateID
 		voteGranted = true
 		electionResetChan <- true
+		log.Printf("Vote granted to candidate %s", req.CandidateID)
 	}
 
 	resp := VoteResponse{Term: node.CurrentTerm, VoteGranted: voteGranted}
@@ -93,9 +105,8 @@ func handleVoteRequest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// requestVote sends a vote request to a peer with retries.
 func requestVote(peer PeerNode, votesReceived *int) {
-	req := VoteRequest{Term: node.CurrentTerm, CandidateID: node.ID}
+	req := VoteRequest{Term: node.CurrentTerm, CandidateID: node.ID, LastLogIndex: len(node.Log)}
 	data, _ := json.Marshal(req)
 	const maxRetries = 3
 

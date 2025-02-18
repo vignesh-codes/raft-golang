@@ -53,8 +53,9 @@ type RaftNode struct {
 
 // JoinResponse structure is used when a node joins the cluster.
 type JoinResponse struct {
-	Leader PeerNode            `json:"leader"`
-	Peers  map[string]PeerNode `json:"peers"`
+	Leader      PeerNode            `json:"leader"`
+	Peers       map[string]PeerNode `json:"peers"`
+	CurrentTerm int                 `json:"current_term"`
 }
 
 var node RaftNode
@@ -74,7 +75,7 @@ func handleJoin(w http.ResponseWriter, r *http.Request) {
 	log.Printf("New node joined: %s", newNode.Address)
 	node.mu.Unlock()
 
-	response := JoinResponse{Leader: node.Leader, Peers: node.Peers}
+	response := JoinResponse{Leader: node.Leader, Peers: node.Peers, CurrentTerm: node.CurrentTerm}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 
@@ -122,6 +123,7 @@ func joinCluster(peerAddress string) {
 	node.mu.Lock()
 	node.Leader = joinResp.Leader
 	node.Peers = joinResp.Peers
+	node.CurrentTerm = joinResp.CurrentTerm
 	node.mu.Unlock()
 	log.Printf("Joined cluster. Leader: %s, Total peers: %d", node.Leader.Address, len(node.Peers))
 }
