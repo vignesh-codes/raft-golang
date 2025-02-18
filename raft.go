@@ -80,6 +80,7 @@ func handleJoin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 
 	if node.State == Leader {
+		time.Sleep(3 * time.Second) // Wait for new node to sync
 		go syncPeers()
 	}
 }
@@ -93,8 +94,16 @@ func startServer(port string) {
 	http.HandleFunc("/appendEntries", handleAppendEntries)
 	http.HandleFunc("/getLog", handleGetLog)
 	http.HandleFunc("/newCommand", handleNewCommandEntry)
+	http.HandleFunc("/getClusterInfo", handleGetClusterInfo)
 	log.Printf("Node %s listening on port %s...", node.ID, port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+func handleGetClusterInfo(w http.ResponseWriter, r *http.Request) {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(node)
 }
 
 func handleGetLog(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +148,7 @@ func main() {
 		knownPeer = os.Args[2]
 	}
 	rand.Seed(time.Now().UnixNano())
-	electionTimeout = time.Duration(rand.Intn(5)+10) * time.Second
+	electionTimeout = time.Duration(rand.Intn(5)+8) * time.Second
 
 	node = RaftNode{
 		ID:        "node-" + port,
@@ -155,10 +164,11 @@ func main() {
 		node.State = Leader
 		node.Leader = PeerNode{ID: node.ID, Address: node.Address}
 		node.Peers[node.ID] = PeerNode{ID: node.ID, Address: node.Address}
-		go sendHeartbeats()
+		SENDHEARBEATSFLAG = true
+		startHeartbeats()
 	} else {
 		joinCluster(knownPeer)
-		go startLeaderCheck()
+		startLeaderCheck()
 	}
 	startServer(port)
 }

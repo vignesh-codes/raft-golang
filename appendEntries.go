@@ -16,6 +16,7 @@ type AppendEntriesRequest struct {
 	PrevLogTerm  int        `json:"prev_log_term"`
 	Entries      []LogEntry `json:"entries"`
 	LeaderCommit int        `json:"leader_commit"`
+	Address      string     `json:"address"`
 }
 
 // AppendEntriesResponse is returned by followers after processing AppendEntries.
@@ -29,13 +30,20 @@ type AppendEntriesResponse struct {
 
 // handleAppendEntries processes the AppendEntries RPC from the leader.
 func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Received AppendEntries request")
 
 	var req AppendEntriesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fmt.Println("Error decoding request:", err)
 		http.Error(w, "Invalid append entries request", http.StatusBadRequest)
 		return
+	}
+	if node.State == Leader {
+		stopHeartbeats()
+		fmt.Println("another one is also a leader which is bad")
+		node.State = Follower
+		startLeaderCheck()
+		node.Leader = PeerNode{ID: req.LeaderID, Address: req.Address}
+
 	}
 
 	node.mu.Lock()
@@ -90,7 +98,7 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 		node.CommitIndex = min(req.LeaderCommit, len(node.Log)-1)
 	}
 
-	fmt.Printf("Updated log: %+v\n", node.Log)
+	fmt.Printf("Fllower logs: %+v\n", node.Log)
 	resp := AppendEntriesResponse{
 		Term:         node.CurrentTerm,
 		Success:      true,
@@ -119,8 +127,6 @@ func sendAppendEntries(peer PeerNode, req AppendEntriesRequest) (*AppendEntriesR
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		fmt.Println("response from append entries", response)
-		fmt.Println("leader logs are ", node.Log)
 		return &response, nil
 	}
 	return response, nil

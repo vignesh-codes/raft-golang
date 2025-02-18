@@ -26,49 +26,119 @@ type VoteResponse struct {
 // startElection initiates the leader election process.
 func startElection() {
 	node.mu.Lock()
+
+	// Move to candidate state
 	node.State = Candidate
 	node.CurrentTerm++
 	node.VotedFor = node.ID
-	votesReceived := 1 // Vote for self.
+	votesReceived := 1
+	currentTerm := node.CurrentTerm
+
 	node.mu.Unlock()
 
-	log.Printf("Node %s started election for term %d", node.ID, node.CurrentTerm)
-
+	log.Printf("Node %s started election for term %d", node.ID, currentTerm)
 	var wg sync.WaitGroup
+	voteResponses := make(chan int, len(node.Peers))
+	fmt.Println("requesting votes from these peers ", node.Peers)
 	for _, peer := range node.Peers {
+		if peer.ID == node.ID {
+			continue
+		}
 		wg.Add(1)
 		go func(peer PeerNode) {
 			defer wg.Done()
-			requestVote(peer, &votesReceived)
+			voteGranted := requestVote(peer, currentTerm)
+			voteResponses <- voteGranted
 		}(peer)
 	}
 
-	done := make(chan struct{})
+	// Close channel after collecting votes
 	go func() {
 		wg.Wait()
-		close(done)
+		close(voteResponses)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		log.Printf("Election timed out for term %d", node.CurrentTerm)
-	}
+	// Count votes
+	votesReceived += <-voteResponses
 
-	node.mu.Lock()
-	defer node.mu.Unlock()
-	if votesReceived > len(node.Peers)/2 {
+	// Lock before updating node state
+	// node.mu.Lock()
+	// defer node.mu.Unlock()
+
+	if node.CurrentTerm != currentTerm {
+		log.Printf("Election for term %d is outdated", currentTerm)
+		return
+	}
+	fmt.Println("required votes:", len(node.Peers)/2)
+	fmt.Println("votes received:", votesReceived)
+	if len(node.Peers) == 2 {
+		// sleep for random seconds between 0 and 15 seconds
+		time.Sleep(time.Duration(rand.Intn(15)) * time.Second)
+	}
+	// Majority vote check
+	if votesReceived >= len(node.Peers)/2 {
 		node.State = Leader
 		node.Leader = PeerNode{ID: node.ID, Address: node.Address}
 		log.Printf("Node %s is elected as leader for term %d", node.ID, node.CurrentTerm)
-		go sendHeartbeats()
+		startHeartbeats()
+		stopLeaderCheck()
+		// go sendHeartbeats()
 	} else {
-		log.Printf("Election failed for term %d with %d votes, retrying...", node.CurrentTerm, votesReceived)
-		node.mu.Unlock()
-		time.Sleep(time.Duration(rand.Intn(150)+150) * time.Millisecond)
-		startElection()
-		return
+		log.Printf("Election failed for term %d with %d votes", node.CurrentTerm, votesReceived)
+		// electionResetChan <- true
 	}
+}
+
+// -------------------- Request Vote from Peers --------------------
+
+func requestVote(peer PeerNode, term int) int {
+	client := &http.Client{Timeout: 2 * time.Second} // Set request timeout
+	req := VoteRequest{Term: term, CandidateID: node.ID, LastLogIndex: len(node.Log)}
+	data, _ := json.Marshal(req)
+
+	resp, err := client.Post(peer.Address+"/vote", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		log.Printf("Failed to request vote from %s: %v", peer.Address, err)
+		// trying to acquaire lock
+		fmt.Println("[[[ trying to acquire node lock for removing unresponsive peers ]]] \n")
+		node.mu.Lock()
+		// remove peers if exists
+		node.Peers = removePeer(node.Peers, peer)
+		fmt.Println("removed unresponsive peers ", peer)
+		node.mu.Unlock()
+		return 0
+	}
+	defer resp.Body.Close()
+
+	var voteResp VoteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&voteResp); err != nil {
+		log.Printf("Invalid response from %s", peer.Address)
+		return 0
+	}
+
+	// Update term if outdated
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	if voteResp.Term > node.CurrentTerm {
+		node.CurrentTerm = voteResp.Term
+		node.State = Follower
+		startLeaderCheck()
+		node.VotedFor = ""
+		return 0
+	}
+
+	return 1
+}
+
+func removePeer(peers map[string]PeerNode, peer PeerNode) map[string]PeerNode {
+	// Remove the peer from the map if exists
+	_, ok := peers[peer.ID]
+	if !ok {
+		fmt.Println("peer not found")
+		return peers
+	}
+	delete(peers, peer.ID)
+	return peers
 }
 
 func handleVoteRequest(w http.ResponseWriter, r *http.Request) {
@@ -83,63 +153,20 @@ func handleVoteRequest(w http.ResponseWriter, r *http.Request) {
 
 	voteGranted := false
 	if req.Term < node.CurrentTerm {
-		// Reject the vote if the candidate's term is outdated.
-		log.Printf("Rejecting vote request from candidate %s: outdated term %d", req.CandidateID, req.Term)
+		log.Printf("Rejecting vote request from %s: outdated term %d", req.CandidateID, req.Term)
 	} else if req.Term > node.CurrentTerm {
-		// Update term and step down to follower if the candidate's term is newer.
 		node.CurrentTerm = req.Term
 		node.VotedFor = ""
 		node.State = Follower
+		startLeaderCheck()
 	}
 
-	// Grant vote only if the candidate's log is up-to-date
-	if req.Term == node.CurrentTerm && (req.LastLogIndex >= len(node.Log) || node.Log[req.LastLogIndex].Term == req.Term) {
+	if req.Term == node.CurrentTerm && (req.LastLogIndex >= len(node.Log) || len(node.Log) == 0) {
 		node.VotedFor = req.CandidateID
 		voteGranted = true
-		electionResetChan <- true
-		log.Printf("Vote granted to candidate %s", req.CandidateID)
 	}
 
 	resp := VoteResponse{Term: node.CurrentTerm, VoteGranted: voteGranted}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-func requestVote(peer PeerNode, votesReceived *int) {
-	req := VoteRequest{Term: node.CurrentTerm, CandidateID: node.ID, LastLogIndex: len(node.Log)}
-	data, _ := json.Marshal(req)
-	const maxRetries = 3
-
-	for i := 0; i < maxRetries; i++ {
-		if peer.ID == node.ID {
-			*votesReceived++
-			break
-		}
-		resp, err := http.Post(peer.Address+"/vote", "application/json", bytes.NewBuffer(data))
-		if err != nil {
-			log.Printf("Failed to request vote from %s (attempt %d): %v", peer.Address, i+1, err)
-			time.Sleep(time.Duration(rand.Intn(100)+100) * time.Millisecond)
-			if i <= maxRetries {
-				// remove this peer from peers
-				node.mu.Lock()
-				delete(node.Peers, peer.ID)
-				fmt.Println("Updated peers list:", node.Peers)
-				node.mu.Unlock()
-			}
-			continue
-		}
-		var voteResp VoteResponse
-		if err := json.NewDecoder(resp.Body).Decode(&voteResp); err == nil && voteResp.VoteGranted {
-			*votesReceived++
-			log.Printf("Vote granted by %s", peer.Address)
-		} else {
-			log.Printf("Failed to get vote from %s: Term %d, Granted: %v", peer.Address, voteResp.Term, voteResp.VoteGranted)
-		}
-		resp.Body.Close()
-		break
-	}
-
-	if *votesReceived == 0 {
-		log.Printf("Node %s failed to get a vote from %s after %d retries", node.ID, peer.Address, maxRetries)
-	}
 }
