@@ -43,9 +43,8 @@ func handleAppendEntries(w http.ResponseWriter, r *http.Request) {
 		node.State = Follower
 		startLeaderCheck()
 		node.Leader = PeerNode{ID: req.LeaderID, Address: req.Address}
-
 	}
-
+	node.Leader = PeerNode{ID: req.LeaderID, Address: req.Address}
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
